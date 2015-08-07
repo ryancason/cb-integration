@@ -11,6 +11,8 @@ import ConfigParser
 from logging.handlers import RotatingFileHandler
 from signal import SIGTERM
 
+import cbapi
+
 import cbint.utils.filesystem
 
 
@@ -258,3 +260,124 @@ class CbIntegrationDaemon(object):
             self.__parse_config(self.configfile)
 
             self.__is_initialized = True
+
+    def __get_cb_options(self):
+        # first, try the local server to see if we can use it
+        try:
+            from cb.utils import Config
+            from cb.utils.db import CbDbSession
+            from cb.db.core_models import User
+            from sqlalchemy import create_engine
+
+            cfg = Config()
+            cfg.load('/etc/cb/cb.conf')
+
+            engine = create_engine(cfg.DatabaseURL)
+            s = CbDbSession(bind=engine)
+            api_key = s.query(User).filter(User.global_admin == True).one().auth_token
+
+            info_dict = {
+                'carbonblack_server_url': 'https://127.0.0.1:%d' % (cfg.NginxWebApiHttpPort),
+                'carbonblack_server_token': api_key,
+                'carbonblack_server_sslverify': 0,
+                'listener_address': '127.0.0.1',
+                'feed_host': '127.0.0.1'
+            }
+
+            try:
+                streaming_username = cfg.RabbitMQUser
+                streaming_password = cfg.RabbitMQPassword
+                info_dict['carbonblack_streaming_host'] = '127.0.0.1'
+                info_dict['carbonblack_streaming_username'] = streaming_username
+                info_dict['carbonblack_streaming_password'] = streaming_password
+            except:
+                pass
+
+        except:
+            info_dict = {}
+
+        return info_dict
+
+    def __get_cb_info(self):
+        sys.stdout.write("Cb server url: ")
+        sys.stdout.flush()
+        url = sys.stdin.readline().strip()
+        sys.stdout.write("Cb server API token: ")
+        sys.stdout.flush()
+        token = sys.stdin.readline().strip()
+
+        return (url, token)
+
+    def __try_cb(self, url, token):
+        try:
+            c = cbapi.CbApi(url, token=token, ssl_verify=False)
+            c.info()
+            return True
+        except:
+            return False
+
+    def interactive_config(self):
+        happy = False
+
+        while not happy:
+            cfg = self.__interactive_config()
+
+            sys.stdout.write("\nConfiguration summary:\n")
+            for option in cfg.options('bridge'):
+                print ' ', option, ':', cfg.get('bridge', option)
+
+            sys.stdout.write("Does this look OK? Type yes to write to %s, no to reconfigure: " % self.configfile)
+            sys.stdout.flush()
+            response = sys.stdin.readline().strip()
+
+            if response.lower() == 'yes':
+                happy = True
+                cfg.write(open(self.configfile, 'w'))
+
+    def __interactive_config(self):
+        cb_options = self.__get_cb_options()
+
+        cfg = ConfigParser.ConfigParser()
+
+        try:
+            cfg.readfp(open(self.configfile + '.example', 'r'))
+        except:
+            self.logger.error("Cannot open example configuration file: %s" % self.configfile + '.example')
+            return False
+
+        if not cfg.has_section('bridge'):
+            self.logger.error("Example configuration file does not contain the required 'bridge' section")
+            return False
+
+        # override example with the cb options we discerned from __get_cb_options.
+        for key in cb_options:
+            if cfg.has_option('bridge', key):
+                cfg.set('bridge', key, cb_options[key])
+
+        option_list = cfg.options('bridge')
+
+        if 'carbonblack_server_url' not in cb_options or 'carbonblack_server_token' not in cb_options:
+            (cb_options['carbonblack_server_url'], cb_options['carbonblack_server_token']) = self.__get_cb_info()
+
+        cb_validated = False
+
+        # first get Cb options validated
+        while not cb_validated:
+            cb_validated = self.__try_cb(cb_options['carbonblack_server_url'], cb_options['carbonblack_server_token'])
+            if not cb_validated:
+                sys.stdout.write("Could not log into Cb using URL %s and token %s.\n" % (cb_options['carbonblack_server_url'],
+                                                                                         cb_options['carbonblack_server_token']))
+                cb_options['carbonblack_server_url'], cb_options['carbonblack_server_token'] = self.__get_cb_info()
+
+        cfg.set('bridge', 'carbonblack_server_url', cb_options['carbonblack_server_url'])
+        cfg.set('bridge', 'carbonblack_server_token', cb_options['carbonblack_server_token'])
+
+        # interactively configure the rest
+        for option in set(option_list) - set(cb_options.keys()):
+            sys.stdout.write(" option %s [%s]: " % (option, cfg.get('bridge', option)))
+            input = sys.stdin.readline().strip()
+            if input:
+                cfg.set('bridge', option, input)
+
+        return cfg
+

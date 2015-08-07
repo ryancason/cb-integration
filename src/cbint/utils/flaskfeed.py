@@ -4,30 +4,26 @@ import flask
 
 import cbint.utils.json
 
-
-class FlaskFeed:
-
-    def __init__(self, import_name, use_wgsi_body_helper=False, template_folder=None):
-
+class FlaskFeed(object):
+    def __init__(self, import_name, use_wsgi_body_helper=False, template_folder=None):
         self.local_dir = os.path.dirname(os.path.realpath(__file__))
         if template_folder is None:
             template_folder = "%s/templates" % self.local_dir
         self.app = flask.Flask(import_name, template_folder=template_folder)
-        if use_wgsi_body_helper:
+
+        if use_wsgi_body_helper:
             self.app.wsgi_app = WSGICopyBody(self.app.wsgi_app)
 
     def run(self, host, port, debug):
         """
         runs the flask server
         """
-
         self.app.run(host=host, port=port, debug=debug, use_reloader=False)
 
     def generate_json_feed(self, feed):
         """
         generates the feed in json format
         """
-
         return flask.Response(response=cbint.utils.json.json_encode(feed), mimetype='application/json')
 
     def generate_html_feed(self, feed, integration_name):
