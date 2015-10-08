@@ -180,6 +180,8 @@ class CbIntegrationDaemon(object):
                 self.run()
             except Exception as e:
                 self.fatal(e)
+            finally:
+                self.on_stopping()
 
         self.logger.info("the daemon has stopped")
 
@@ -187,10 +189,8 @@ class CbIntegrationDaemon(object):
 
     def stop(self):
         """
-        Stop the daemon
+        Stop the daemon. Note that this is run in the context of a *new* process.
         """
-        self.on_stopping()
-
         # Get the pid from the pidfile
         try:
             pf = file(self.pidfile, 'r')
